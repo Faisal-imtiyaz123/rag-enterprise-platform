@@ -1,0 +1,68 @@
+#!/usr/bin/env python3
+import sys, os, urllib.request, json
+
+BASE_URL = os.environ.get("RAG_API_URL", "http://localhost:8080/api")
+ADMIN_KEY = os.environ.get("RAG_ADMIN_KEY", "adminkey123")
+
+def print_help():
+    print("""
+Enterprise RAG CLI Utility
+Usage:
+  rag ask "<question>"         Ask a question across all indexed knowledge
+  rag docs                     List all ingested enterprise documents
+  rag audit                    View security and compliance audit logs
+  rag health                   Check backend and guardrail system status
+  rag upload <filepath>        Upload PDF, DOCX, or text file as Admin
+""")
+
+def ask_query(query):
+    print(f"\033[33m[Querying RAG Platform: \"{query}\"]\033[0m")
+    data = json.dumps({"query": query, "topK": 4, "userRole": "USER"}).encode("utf-8")
+    req = urllib.request.Request(f"{BASE_URL}/query", data=data, headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req) as resp:
+            res = json.loads(resp.read().decode("utf-8"))
+            if not res.get("guardrailPassed", True):
+                print(f"\033[31m[BLOCKED BY GUARDRAIL]:\033[0m {res.get('guardrailViolation')}")
+                return
+            print("\n\033[1m\033[32m=== ANSWER ===\033[0m")
+            print(res.get("answer"))
+            citations = res.get("citations", [])
+            if citations:
+                print(f"\n\033[34m--- Verified Citations ({len(citations)}) ---\033[0m")
+                for i, c in enumerate(citations):
+                    print(f"[{i+1}] {c.get('documentName')} (Chunk #{c.get('chunkIndex')}, Relevance: {c.get('relevanceScore')})")
+                    print(f"    Snippet: \"{c.get('snippet')}\"")
+            print(f"\033[90m(Execution latency: {res.get('executionTimeMs')}ms)\033[0m")
+    except Exception as e:
+        print(f"\033[31mFailed to query backend: {e}\033[0m")
+
+def list_docs():
+    req = urllib.request.Request(f"{BASE_URL}/documents")
+    try:
+        with urllib.request.urlopen(req) as resp:
+            docs = json.loads(resp.read().decode("utf-8"))
+            print(f"\n\033[34m=== INGESTED ENTERPRISE DOCUMENTS ({len(docs)}) ===\033[0m")
+            for d in docs:
+                print(f"• [ID: {d.get('id')}] {d.get('filename')} ({d.get('contentType')}, {d.get('chunkCount')} chunks, uploaded by {d.get('uploadedBy')})")
+                print(f"  Description: {d.get('description')}")
+    except Exception as e:
+        print(f"\033[31mFailed to list documents: {e}\033[0m")
+
+def main():
+    if len(sys.argv) < 2 or sys.argv[1] in ["-h", "--help", "help"]:
+        print_help()
+        return
+    cmd = sys.argv[1]
+    if cmd == "docs":
+        list_docs()
+    elif cmd == "ask":
+        if len(sys.argv) < 3:
+            print("Please specify a question, e.g.: rag ask \"What is the architecture?\"")
+            return
+        ask_query(" ".join(sys.argv[2:]))
+    else:
+        ask_query(" ".join(sys.argv[1:]))
+
+if __name__ == "__main__":
+    main()
