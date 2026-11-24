@@ -7,6 +7,8 @@ import com.rag.enterprise.model.AuditLogEntity;
 import com.rag.enterprise.model.DocumentChunkEntity;
 import com.rag.enterprise.repository.AuditLogRepository;
 import com.rag.enterprise.repository.DocumentChunkRepository;
+import com.rag.enterprise.service.hnsw.HnswIndex;
+import com.rag.enterprise.service.hnsw.HnswVectorService;
 import org.springframework.stereotype.Service;
 
 import java.util.*;
@@ -17,17 +19,20 @@ public class RagSearchService {
 
     private final DocumentChunkRepository chunkRepository;
     private final VectorEmbeddingService vectorService;
+    private final HnswVectorService hnswVectorService;
     private final LlmGatewayService llmService;
     private final GuardrailService guardrailService;
     private final AuditLogRepository auditLogRepository;
 
     public RagSearchService(DocumentChunkRepository chunkRepository,
                             VectorEmbeddingService vectorService,
+                            HnswVectorService hnswVectorService,
                             LlmGatewayService llmService,
                             GuardrailService guardrailService,
                             AuditLogRepository auditLogRepository) {
         this.chunkRepository = chunkRepository;
         this.vectorService = vectorService;
+        this.hnswVectorService = hnswVectorService;
         this.llmService = llmService;
         this.guardrailService = guardrailService;
         this.auditLogRepository = auditLogRepository;
@@ -54,22 +59,21 @@ public class RagSearchService {
         // 2. Compute Query Embedding
         float[] queryEmbedding = vectorService.computeEmbedding(sanitizedQuery);
 
-        // 3. Dense Cosine Retrieval
-        List<DocumentChunkEntity> allChunks = chunkRepository.findAll();
-        List<ScoredChunk> scoredChunks = new ArrayList<>();
+        // 3. HNSW (Hierarchical Navigable Small World) Similarity Search
+        int k = request.getTopK() > 0 ? request.getTopK() : 4;
+        List<HnswIndex.Neighbor<Long>> hnswNeighbors = hnswVectorService.search(queryEmbedding, k * 2);
 
-        for (DocumentChunkEntity chunk : allChunks) {
-            float[] chunkVec = vectorService.deserializeVector(chunk.getVectorEmbedding());
-            double score = vectorService.cosineSimilarity(queryEmbedding, chunkVec);
-            if (score > 0.05) { // Similarity threshold
-                scoredChunks.add(new ScoredChunk(chunk, score));
+        List<ScoredChunk> scoredChunks = new ArrayList<>();
+        for (HnswIndex.Neighbor<Long> neighbor : hnswNeighbors) {
+            if (neighbor.similarity() > 0.05) {
+                Optional<DocumentChunkEntity> chunkOpt = chunkRepository.findById(neighbor.id());
+                chunkOpt.ifPresent(chunk -> scoredChunks.add(new ScoredChunk(chunk, neighbor.similarity())));
             }
         }
 
-        // Sort descending by relevance score
-        scoredChunks.sort((a, b) -> Double.compare(b.score, a.score));
-        int k = Math.min(request.getTopK() > 0 ? request.getTopK() : 4, scoredChunks.size());
-        List<ScoredChunk> topKChunks = scoredChunks.subList(0, k);
+        // Limit to desired top-K
+        int effectiveK = Math.min(k, scoredChunks.size());
+        List<ScoredChunk> topKChunks = scoredChunks.subList(0, effectiveK);
 
         // 4. Extract contexts for LLM Synthesis
         List<String> contexts = topKChunks.stream()

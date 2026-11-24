@@ -25,13 +25,16 @@ public class DocumentIngestionService {
     private final DocumentRepository documentRepository;
     private final DocumentChunkRepository chunkRepository;
     private final VectorEmbeddingService vectorService;
+    private final com.rag.enterprise.service.hnsw.HnswVectorService hnswVectorService;
 
     public DocumentIngestionService(DocumentRepository documentRepository,
                                     DocumentChunkRepository chunkRepository,
-                                    VectorEmbeddingService vectorService) {
+                                    VectorEmbeddingService vectorService,
+                                    com.rag.enterprise.service.hnsw.HnswVectorService hnswVectorService) {
         this.documentRepository = documentRepository;
         this.chunkRepository = chunkRepository;
         this.vectorService = vectorService;
+        this.hnswVectorService = hnswVectorService;
     }
 
     @Transactional
@@ -63,7 +66,8 @@ public class DocumentIngestionService {
                     chunkText,
                     serialized
             );
-            chunkRepository.save(chunkEntity);
+            chunkEntity = chunkRepository.save(chunkEntity);
+            hnswVectorService.indexChunk(chunkEntity.getId(), embedding);
         }
 
         return doc;
@@ -90,7 +94,8 @@ public class DocumentIngestionService {
                     chunkText,
                     serialized
             );
-            chunkRepository.save(chunkEntity);
+            chunkEntity = chunkRepository.save(chunkEntity);
+            hnswVectorService.indexChunk(chunkEntity.getId(), embedding);
         }
 
         return doc;
@@ -142,6 +147,12 @@ public class DocumentIngestionService {
 
     @Transactional
     public void deleteDocument(Long id) {
+        List<DocumentChunkEntity> chunks = chunkRepository.findByDocumentId(id);
+        if (chunks != null) {
+            for (DocumentChunkEntity chunk : chunks) {
+                hnswVectorService.removeChunk(chunk.getId());
+            }
+        }
         chunkRepository.deleteByDocumentId(id);
         documentRepository.deleteById(id);
     }
